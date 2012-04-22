@@ -57,12 +57,7 @@ public class MockHttpServerTest extends TestCase {
                 while (it.hasNext()){
                     Header h = (Header) it.next();
                     if(headers.contains(h.getName())){
-                        if(h.getElements().length > 0)
-                            for (HeaderElement he : h.getElements()){
-                                headerCount++;
-                            }
-                        else
-                           headerCount++;
+                        headerCount++;
                     }
                 }
                 Assert.assertEquals(3, headerCount);
