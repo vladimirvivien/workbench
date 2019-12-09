@@ -4,32 +4,29 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
-	var groups, kinds, ns, version, names, label, field string
+	var groups, kinds, ns, version, names, labels, fields string
 	kubeconfig := os.Getenv("KUBECONFIG")
 	flag.StringVar(&groups, "groups", "", "comma-sep list of API groups")
 	flag.StringVar(&kinds, "kinds", "", "comma-sep list of API kinds")
 	flag.StringVar(&ns, "namespace", "", "namespace for resource")
 	flag.StringVar(&version, "version", "", "resource version")
 	flag.StringVar(&names, "names", "", "object names")
-	flag.StringVar(&label, "l", "", "Label selector")
-	flag.StringVar(&field, "f", "", "Field selector")
+	flag.StringVar(&labels, "l", "", "Label selector")
+	flag.StringVar(&fields, "f", "", "Field selector")
 	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "kubeconfig file")
 	flag.Parse()
 
@@ -97,9 +94,8 @@ func main() {
 
 			// filter by resource kind
 			for _, res := range resources.APIResources {
-				resKinds := strings.Split(kinds, ",")
-				if len(kinds) > 0 && !isResOfKind(res, resKinds...) {
-					//log.Printf("WARN: Kinds %s not matched for %s", kinds, res.Name)
+				if len(kinds) > 0 && !strings.Contains(strings.ToLower(kinds), strings.ToLower(res.Kind)) {
+					//log.Printf("WARN: Kinds %s not matched for %s", res.Kind, res.Name)
 					continue
 				}
 
@@ -109,11 +105,16 @@ func main() {
 					Resource: res.Name,
 				}
 
+				// select by namespace if any
+				listOptions := metav1.ListOptions{
+					LabelSelector: labels,
+					FieldSelector: fields,
+				}
 				var unstructList *unstructured.UnstructuredList
 				if len(ns) > 0 && res.Namespaced {
-					unstructList, err = k8sc.Resource(gvr).Namespace(ns).List(metav1.ListOptions{})
+					unstructList, err = k8sc.Resource(gvr).Namespace(ns).List(listOptions)
 				} else {
-					unstructList, err = k8sc.Resource(gvr).List(metav1.ListOptions{})
+					unstructList, err = k8sc.Resource(gvr).List(listOptions)
 				}
 
 				if err != nil {
@@ -121,12 +122,14 @@ func main() {
 					continue
 				}
 
+				// filter based on names
 				for _, unstruct := range unstructList.Items {
+					if len(names) > 0 && !strings.Contains(names, unstruct.GetName()) {
+						continue
+					}
 					fmt.Printf("%s/%s/%s: %s\n", grpName, discoGV.Version, res.Name, unstruct.GetName())
 				}
-
 			}
-
 		}
 	}
 }
@@ -143,63 +146,4 @@ func getLegacyGrpName(str string) string {
 		return "core"
 	}
 	return str
-}
-
-func isGrpMatched(apiGrp metav1.APIGroup, selGrps ...string) bool {
-	if len(selGrps) == 0 {
-		return false
-	}
-	for _, selGrp := range selGrps {
-		if apiGrp.Name == strings.TrimSpace(selGrp) {
-			return true
-		}
-	}
-	return false
-}
-
-func isResOfKind(res metav1.APIResource, kinds ...string) bool {
-	if len(kinds) == 0 {
-		return false
-	}
-	for k := range kinds {
-		kind := strings.TrimSpace(kinds[k])
-		switch {
-		case strings.HasPrefix(strings.ToLower(res.Kind), strings.ToLower(kind)),
-			strings.HasPrefix(strings.ToLower(res.Name), strings.ToLower(kind)):
-			return true
-		}
-	}
-	return false
-}
-
-func isResOfVer(res metav1.APIResource, ver string) bool {
-	if ver == "" {
-		return false
-	}
-	return ver == res.Version
-}
-
-func discoResourcesByGroupVersion(restc rest.Interface, gv metav1.GroupVersionForDiscovery) ([]metav1.APIResource, error) {
-	var url url.URL
-	if gv.String() == "" {
-		return nil, fmt.Errorf("group and version are empty")
-	}
-	groupVer := gv.String()
-	if groupVer == "v1" {
-		url.Path = fmt.Sprintf("/api/%s", groupVer)
-	} else {
-		url.Path = "/apis/" + groupVer
-	}
-	resList := &metav1.APIResourceList{
-		GroupVersion: groupVer,
-	}
-	err := restc.Get().AbsPath(url.String()).Do().Into(resList)
-	if err != nil {
-		// handle legacy groupVersion if 403 or 404.
-		if groupVer == "v1" && (!errors.IsNotFound(err) && !errors.IsForbidden(err)) {
-			return nil, err
-		}
-	}
-
-	return resList.APIResources, nil
 }
